@@ -3,14 +3,27 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import date
 import uvicorn
+from enum import Enum
+
+# Define enums for constrained fields
+class StatusEnum(str, Enum):
+    PAS_COMMENCE = "Pas commencé"
+    EN_COURS = "En cours"
+    TERMINEE = "Terminée"
+
+class PriorityEnum(str, Enum):
+    HIGH = "High"
+    NORMAL = "Normal"
+    LOW = "Low"
 
 # Define Task data model
 class TaskBase(BaseModel):
-    name: str
-    status: str
-    due_date: date
-    capacite_c: int
-    effort_c: int
+    Task_Name__c: str
+    Status: StatusEnum
+    Capacite__c: int
+    Effort_Realise__c: int
+    subject: str = "Other"  # Default value
+    Priority: PriorityEnum
 
 class TaskCreate(TaskBase):
     pass
@@ -26,25 +39,63 @@ app = FastAPI(title="Task Management API",
               description="API for managing Task objects",
               version="1.0.0")
 
-# In-memory database (replace with actual database in production)
-tasks_db = []
-task_id_counter = 1
+# In-memory database with 20 pre-populated tasks
+tasks_db = [
+    Task(
+        id=1,
+        Task_Name__c="Complete project requirements documentation",
+        Status=StatusEnum.EN_COURS if i % 3 == 1 else 
+              (StatusEnum.TERMINEE if i % 3 == 2 else StatusEnum.PAS_COMMENCE),
+        Capacite__c=80 - (i % 5) * 10,
+        Effort_Realise__c=20 + (i % 4) * 15,
+        Priority=PriorityEnum.HIGH if i % 3 == 0 else 
+               (PriorityEnum.NORMAL if i % 3 == 1 else PriorityEnum.LOW)
+    ) for i in range(1, 21)
+]
+
+# Rename task names to make them unique and meaningful
+task_names = [
+    "Complete project requirements documentation",
+    "Develop frontend UI components",
+    "Set up database schema and models",
+    "Implement API authentication",
+    "Create automated test suite",
+    "Perform security audit",
+    "Optimize database queries",
+    "Deploy application to staging",
+    "Conduct user acceptance testing",
+    "Fix reported bugs in module A",
+    "Update user documentation",
+    "Refactor legacy code module",
+    "Integrate with third-party payment API",
+    "Create admin dashboard",
+    "Implement user notification system",
+    "Perform load testing",
+    "Migrate data from old system",
+    "Review and improve error handling",
+    "Implement logging and monitoring",
+    "Prepare release notes for v1.0"
+]
+
+# Update task names
+for i, task in enumerate(tasks_db):
+    task.Task_Name__c = task_names[i]
 
 # API routes
 @app.post("/tasks/", response_model=Task, status_code=status.HTTP_201_CREATED)
 def create_task(task: TaskCreate):
     """Create a new task"""
-    global task_id_counter
+    global tasks_db
     new_task = Task(
-        id=task_id_counter,
-        name=task.name,
-        status=task.status,
-        due_date=task.due_date,
-        capacite_c=task.capacite_c,
-        effort_c=task.effort_c
+        id=len(tasks_db) + 1,
+        Task_Name__c=task.Task_Name__c,
+        Status=task.Status,
+        Capacite__c=task.Capacite__c,
+        Effort_Realise__c=task.Effort_Realise__c,
+        subject=task.subject,
+        Priority=task.Priority
     )
     tasks_db.append(new_task)
-    task_id_counter += 1
     return new_task
 
 @app.get("/tasks/", response_model=List[Task])
@@ -67,11 +118,12 @@ def update_task(task_id: int, task_update: TaskBase):
         if task.id == task_id:
             updated_task = Task(
                 id=task_id,
-                name=task_update.name,
-                status=task_update.status,
-                due_date=task_update.due_date,
-                capacite_c=task_update.capacite_c,
-                effort_c=task_update.effort_c
+                Task_Name__c=task_update.Task_Name__c,
+                Status=task_update.Status,
+                Capacite__c=task_update.Capacite__c,
+                Effort_Realise__c=task_update.Effort_Realise__c,
+                subject=task_update.subject,
+                Priority=task_update.Priority
             )
             tasks_db[i] = updated_task
             return updated_task
