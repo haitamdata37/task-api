@@ -1,16 +1,14 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Security
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
 from pydantic import BaseModel, ValidationError
-from typing import List, Optional, Dict
+from typing import List, Optional
 from datetime import date, datetime, timedelta
 import uvicorn
 from enum import Enum
 from jose import JWTError, jwt
-import hashlib
-import secrets
 
-# Security configuration
-SECRET_KEY = secrets.token_hex(32)  # Generate a random secret key
+# Security configuration - use a fixed secret key
+SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -24,25 +22,6 @@ class PriorityEnum(str, Enum):
     HIGH = "High"
     NORMAL = "Normal"
     LOW = "Low"
-
-# Password hashing with SHA-256 (no bcrypt dependency)
-def get_password_hash(password: str) -> str:
-    salt = secrets.token_hex(16)
-    pwdhash = hashlib.sha256(password.encode() + salt.encode()).hexdigest()
-    return f"{salt}${pwdhash}"
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    salt, stored_hash = hashed_password.split('$')
-    calculated_hash = hashlib.sha256(plain_password.encode() + salt.encode()).hexdigest()
-    return calculated_hash == stored_hash
-
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="token",
-    scopes={
-        "tasks:read": "Read tasks",
-        "tasks:write": "Create and modify tasks"
-    }
-)
 
 # User models
 class Token(BaseModel):
@@ -61,7 +40,7 @@ class User(BaseModel):
     scopes: List[str] = []
 
 class UserInDB(User):
-    hashed_password: str
+    password: str
 
 # Task models
 class TaskBase(BaseModel):
@@ -81,22 +60,27 @@ class Task(TaskBase):
     class Config:
         orm_mode = True
 
+# OAuth2 configuration
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="token",
+    scopes={
+        "tasks:read": "Read tasks",
+        "tasks:write": "Create and modify tasks"
+    }
+)
+
 # Initialize FastAPI app
 app = FastAPI(title="Task Management API", 
               description="API for managing Task objects with OAuth 2.0 authentication",
               version="1.0.0")
 
 # Fake users database with different permission scopes
-# Create the hashed passwords with our SHA-256 function
-admin_pwd = get_password_hash("adminpassword")
-user_pwd = get_password_hash("userpassword")
-
 fake_users_db = {
     "admin": {
         "username": "admin",
         "full_name": "Administrator",
         "email": "admin@example.com",
-        "hashed_password": admin_pwd,
+        "password": "adminpassword",  # Plain password for simplicity
         "disabled": False,
         "scopes": ["tasks:read", "tasks:write"]
     },
@@ -104,14 +88,13 @@ fake_users_db = {
         "username": "user",
         "full_name": "Regular User",
         "email": "user@example.com",
-        "hashed_password": user_pwd,
+        "password": "userpassword",  # Plain password for simplicity
         "disabled": False,
         "scopes": ["tasks:read"]  # Read-only access
     }
 }
 
-# In-memory database with 20 pre-populated tasks
-tasks_db = []
+# Task names for pre-populated tasks
 task_names = [
     "Complete project requirements documentation",
     "Develop frontend UI components",
@@ -136,6 +119,7 @@ task_names = [
 ]
 
 # Pre-populate tasks
+tasks_db = []
 for i in range(20):
     status_value = StatusEnum.EN_COURS if i % 3 == 1 else (StatusEnum.TERMINEE if i % 3 == 2 else StatusEnum.PAS_COMMENCE)
     priority_value = PriorityEnum.HIGH if i % 3 == 0 else (PriorityEnum.NORMAL if i % 3 == 1 else PriorityEnum.LOW)
@@ -152,9 +136,6 @@ for i in range(20):
     )
 
 # Authentication functions
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
 def get_user(db, username: str):
     if username in db:
         user_dict = db[username]
@@ -165,7 +146,7 @@ def authenticate_user(fake_db, username: str, password: str):
     user = get_user(fake_db, username)
     if not user:
         return False
-    if not verify_password(password, user.hashed_password):
+    if password != user.password:  # Simple comparison for testing
         return False
     return user
 
@@ -226,7 +207,7 @@ async def get_current_active_user(
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
-# Authentication endpoints
+# Authentication endpoint
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(fake_users_db, form_data.username, form_data.password)
