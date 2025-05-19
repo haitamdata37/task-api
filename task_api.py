@@ -63,7 +63,7 @@ tasks_db = [
 ]
 
 task_names = [
-    "api test 5",
+    "api test 7",
     "Complete project requirements documentation",
     "Develop frontend UI components",
     "Set up database schema and models",
