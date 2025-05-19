@@ -4,16 +4,22 @@ from typing import List, Optional
 from datetime import date
 import uvicorn
 from enum import Enum
-from dotenv import load_dotenv
+import os
 
-load_dotenv()
+# Try to import dotenv, but continue if it's not available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # If python-dotenv is not installed, just continue
+    pass
 
-CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID")
-CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("SALESFORCE_REDIRECT_URI")
-AUTH_URL = os.getenv("SALESFORCE_AUTH_URL")
-TOKEN_URL = os.getenv("SALESFORCE_TOKEN_URL")
-
+# Get environment variables with fallbacks
+CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID", "default_client_id")
+CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET", "default_client_secret")
+REDIRECT_URI = os.getenv("SALESFORCE_REDIRECT_URI", "http://localhost:8000/callback")
+AUTH_URL = os.getenv("SALESFORCE_AUTH_URL", "https://login.salesforce.com/services/oauth2/authorize")
+TOKEN_URL = os.getenv("SALESFORCE_TOKEN_URL", "https://login.salesforce.com/services/oauth2/token")
 
 # Define enums for constrained fields
 class StatusEnum(str, Enum):
@@ -50,20 +56,9 @@ app = FastAPI(title="Task Management API",
               version="1.0.0")
 
 # In-memory database with 20 pre-populated tasks
-tasks_db = [
-    Task(
-        id=1,
-        Task_Name__c="Complete project requirements documentation",
-        Status=StatusEnum.EN_COURS if i % 3 == 1 else 
-              (StatusEnum.TERMINEE if i % 3 == 2 else StatusEnum.PAS_COMMENCE),
-        Capacite__c=80 - (i % 5) * 10,
-        Effort_Realise__c=20 + (i % 4) * 15,
-        Priority=PriorityEnum.HIGH if i % 3 == 0 else 
-               (PriorityEnum.NORMAL if i % 3 == 1 else PriorityEnum.LOW)
-    ) for i in range(1, 21)
-]
+tasks_db = []
 
-# Rename task names to make them unique and meaningful
+# Task names to use for pre-populated tasks
 task_names = [
     "api test 9",
     "Complete project requirements documentation",
@@ -88,9 +83,21 @@ task_names = [
     "Prepare release notes for v1.0"
 ]
 
-# Update task names
-for i, task in enumerate(tasks_db):
-    task.Task_Name__c = task_names[i]
+# Create and populate tasks
+for i in range(1, 21):
+    status_value = StatusEnum.EN_COURS if i % 3 == 1 else (StatusEnum.TERMINEE if i % 3 == 2 else StatusEnum.PAS_COMMENCE)
+    priority_value = PriorityEnum.HIGH if i % 3 == 0 else (PriorityEnum.NORMAL if i % 3 == 1 else PriorityEnum.LOW)
+    
+    tasks_db.append(
+        Task(
+            id=i,
+            Task_Name__c=task_names[i-1] if i-1 < len(task_names) else f"Task {i}",
+            Status=status_value,
+            Capacite__c=80 - (i % 5) * 10,
+            Effort_Realise__c=20 + (i % 4) * 15,
+            Priority=priority_value
+        )
+    )
 
 # API routes
 @app.post("/tasks/", response_model=Task, status_code=status.HTTP_201_CREATED)
@@ -148,6 +155,19 @@ def delete_task(task_id: int):
             tasks_db.pop(i)
             return
     raise HTTPException(status_code=404, detail="Task not found")
+
+# Add a simple status endpoint
+@app.get("/status")
+def get_status():
+    """Check API status"""
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "environment_configured": all([
+            CLIENT_ID != "default_client_id",
+            CLIENT_SECRET != "default_client_secret"
+        ])
+    }
 
 # Run the server
 if __name__ == "__main__":
