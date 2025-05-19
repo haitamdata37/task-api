@@ -1,12 +1,16 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Security
+from fastapi import FastAPI, HTTPException, Depends, status, Security, Request, Response, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
+from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, ValidationError
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import date, datetime, timedelta
 import uvicorn
 from enum import Enum
 import os
+import requests
 from jose import JWTError, jwt
+import json
+from urllib.parse import urlencode
 
 # Try to import dotenv, but continue if it's not available
 try:
@@ -21,12 +25,15 @@ SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Get environment variables with fallbacks
-CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID", "default_client_id")
-CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET", "default_client_secret")
-REDIRECT_URI = os.getenv("SALESFORCE_REDIRECT_URI", "http://localhost:8000/callback")
+# Salesforce OAuth configuration
+CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID", "3MVG9IXUyidRC0l2tzIXfjoVPzLqAsHzSwWPUL9ik5229A3AKolaFLRE8nZxnELmJCK0sedUCEKPqvd.LpQtW")
+CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET", "0387FDCB815A02A5496DD87176671C78FE0DB29C2A6CC3CD5C604678E34517D7")
+REDIRECT_URI = os.getenv("SALESFORCE_REDIRECT_URI", "http://localhost:8000/oauth/callback")
 AUTH_URL = os.getenv("SALESFORCE_AUTH_URL", "https://login.salesforce.com/services/oauth2/authorize")
 TOKEN_URL = os.getenv("SALESFORCE_TOKEN_URL", "https://login.salesforce.com/services/oauth2/token")
+
+# Storage for tokens
+tokens_db = {}  # {user_id: {"access_token": token, "refresh_token": token, "scopes": []}}
 
 # Define enums for constrained fields
 class StatusEnum(str, Enum):
@@ -43,6 +50,10 @@ class PriorityEnum(str, Enum):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    expires_in: int
+    refresh_token: Optional[str] = None
+    scope: Optional[str] = None
+    instance_url: Optional[str] = None
 
 class TokenData(BaseModel):
     username: Optional[str] = None
@@ -76,39 +87,27 @@ class Task(TaskBase):
     class Config:
         orm_mode = True
 
-# OAuth2 configuration
-oauth2_scheme = OAuth2PasswordBearer(
+# Initialize FastAPI app
+app = FastAPI(title="Task Management API", 
+              description="API for managing Task objects with Salesforce OAuth 2.0 authentication",
+              version="1.0.0")
+
+# Define a custom OAuth2 scheme that will validate tokens
+class OAuth2SalesforceBearer(OAuth2PasswordBearer):
+    async def __call__(self, request: Request) -> Optional[str]:
+        token = await super().__call__(request)
+        return token
+
+oauth2_scheme = OAuth2SalesforceBearer(
     tokenUrl="token",
     scopes={
-        "tasks:read": "Read tasks",
-        "tasks:write": "Create and modify tasks"
+        "api": "Access to API",
+        "refresh_token": "Get refresh token"
     }
 )
 
-# Initialize FastAPI app
-app = FastAPI(title="Task Management API", 
-              description="API for managing Task objects with OAuth 2.0 authentication",
-              version="1.0.0")
-
-# Fake users database with different permission scopes
-fake_users_db = {
-    "admin": {
-        "username": "admin",
-        "full_name": "Administrator",
-        "email": "admin@example.com",
-        "password": "adminpassword",  # Plain password for simplicity
-        "disabled": False,
-        "scopes": ["tasks:read", "tasks:write"]
-    },
-    "user": {
-        "username": "user",
-        "full_name": "Regular User",
-        "email": "user@example.com",
-        "password": "userpassword",  # Plain password for simplicity
-        "disabled": False,
-        "scopes": ["tasks:read"]  # Read-only access
-    }
-}
+# In-memory database with 20 pre-populated tasks
+tasks_db = []
 
 # Task names to use for pre-populated tasks
 task_names = [
@@ -135,9 +134,6 @@ task_names = [
     "Prepare release notes for v1.0"
 ]
 
-# In-memory database with pre-populated tasks
-tasks_db = []
-
 # Create and populate tasks
 for i in range(1, 21):
     status_value = StatusEnum.EN_COURS if i % 3 == 1 else (StatusEnum.TERMINEE if i % 3 == 2 else StatusEnum.PAS_COMMENCE)
@@ -155,109 +151,134 @@ for i in range(1, 21):
     )
 
 # Authentication functions
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
-    return None
-
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
-    if not user:
-        return False
-    if password != user.password:  # Simple comparison for testing
-        return False
-    return user
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, CLIENT_SECRET, algorithm=ALGORITHM)
-    return encoded_jwt
-
-async def get_current_user(
-    security_scopes: SecurityScopes, 
-    token: str = Depends(oauth2_scheme)
-):
-    if security_scopes.scopes:
-        authenticate_value = f'Bearer scope="{security_scopes.scope_str}"'
-    else:
-        authenticate_value = "Bearer"
-        
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
-        headers={"WWW-Authenticate": authenticate_value},
+        headers={"WWW-Authenticate": "Bearer"},
     )
     
-    try:
-        payload = jwt.decode(token, CLIENT_SECRET, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_scopes = payload.get("scopes", [])
-        token_data = TokenData(username=username, scopes=token_scopes)
-    except (JWTError, ValidationError):
-        raise credentials_exception
-        
-    user = get_user(fake_users_db, username=token_data.username)
-    if user is None:
-        raise credentials_exception
-        
-    # Check if the user has all the required scopes
-    for scope in security_scopes.scopes:
-        if scope not in token_data.scopes:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not enough permissions",
-                headers={"WWW-Authenticate": authenticate_value},
+    # Here we would normally validate the token with Salesforce
+    # For simplicity, we'll just check if it exists in our tokens_db
+    for user_id, token_data in tokens_db.items():
+        if token_data.get("access_token") == token:
+            # Create a simple user object
+            user = User(
+                username=user_id,
+                email=f"{user_id}@example.com",
+                full_name=f"User {user_id}",
+                disabled=False,
+                scopes=["api"]
             )
+            return user
     
-    return user
+    raise credentials_exception
 
-async def get_current_active_user(
-    current_user: User = Security(get_current_user, scopes=[])
-):
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
+# Salesforce OAuth endpoints
+@app.get("/oauth/authorize")
+async def authorize():
+    """Redirect to Salesforce authorization page"""
+    params = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "scope": "api refresh_token"
+    }
+    
+    authorize_url = f"{AUTH_URL}?{urlencode(params)}"
+    return RedirectResponse(url=authorize_url)
 
-# Authentication endpoint
-@app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
-    if not user:
+@app.get("/oauth/callback")
+async def oauth_callback(code: str = Query(...), state: Optional[str] = Query(None)):
+    """Handle the callback from Salesforce"""
+    # Exchange authorization code for tokens
+    token_data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI
+    }
+    
+    response = requests.post(TOKEN_URL, data=token_data)
+    
+    if response.status_code != 200:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to obtain access token: {response.text}"
         )
     
-    # Only include scopes that the user has access to and were requested
-    scopes = [scope for scope in form_data.scopes if scope in user.scopes]
+    tokens = response.json()
     
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username, "scopes": scopes},
-        expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    # Store tokens (in a real app, associate with the current user)
+    user_id = "user_" + tokens["access_token"][-8:]  # Use last 8 chars of token as user ID
+    tokens_db[user_id] = tokens
+    
+    return JSONResponse(content={
+        "message": "Successfully authenticated with Salesforce",
+        "user_id": user_id,
+        "token_type": tokens["token_type"],
+        "access_token": tokens["access_token"][:10] + "...",  # Show only the beginning
+        "instance_url": tokens.get("instance_url", "N/A")
+    })
 
-@app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
+@app.post("/oauth/token")
+async def token(code: Optional[str] = None, refresh_token: Optional[str] = None, grant_type: str = "authorization_code"):
+    """Exchange authorization code or refresh token for access token"""
+    if grant_type == "authorization_code" and code:
+        # Exchange authorization code for tokens
+        token_data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "redirect_uri": REDIRECT_URI
+        }
+    elif grant_type == "refresh_token" and refresh_token:
+        # Exchange refresh token for new access token
+        token_data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid request parameters"
+        )
+    
+    response = requests.post(TOKEN_URL, data=token_data)
+    
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to obtain access token: {response.text}"
+        )
+    
+    tokens = response.json()
+    
+    # Store tokens (in a real app, associate with the current user)
+    user_id = "user_" + tokens["access_token"][-8:]
+    tokens_db[user_id] = tokens
+    
+    return Token(
+        access_token=tokens["access_token"],
+        token_type=tokens["token_type"],
+        expires_in=tokens.get("expires_in", 7200),
+        refresh_token=tokens.get("refresh_token"),
+        scope=tokens.get("scope"),
+        instance_url=tokens.get("instance_url")
+    )
+
+@app.get("/users/me/")
+async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 # API routes with authentication
 @app.post("/tasks/", response_model=Task, status_code=status.HTTP_201_CREATED)
-def create_task(
-    task: TaskCreate, 
-    current_user: User = Security(get_current_active_user, scopes=["tasks:write"])
-):
-    """Create a new task (requires write scope)"""
+def create_task(task: TaskCreate, current_user: User = Depends(get_current_user)):
+    """Create a new task"""
     new_task = Task(
         id=len(tasks_db) + 1,
         Task_Name__c=task.Task_Name__c,
@@ -271,32 +292,21 @@ def create_task(
     return new_task
 
 @app.get("/tasks/", response_model=List[Task])
-def read_tasks(
-    skip: int = 0, 
-    limit: int = 100, 
-    current_user: User = Security(get_current_active_user, scopes=["tasks:read"])
-):
-    """Retrieve a list of tasks (requires read scope)"""
+def read_tasks(skip: int = 0, limit: int = 100, current_user: User = Depends(get_current_user)):
+    """Retrieve a list of tasks"""
     return tasks_db[skip : skip + limit]
 
 @app.get("/tasks/{task_id}", response_model=Task)
-def read_task(
-    task_id: int, 
-    current_user: User = Security(get_current_active_user, scopes=["tasks:read"])
-):
-    """Retrieve a specific task by ID (requires read scope)"""
+def read_task(task_id: int, current_user: User = Depends(get_current_user)):
+    """Retrieve a specific task by ID"""
     for task in tasks_db:
         if task.id == task_id:
             return task
     raise HTTPException(status_code=404, detail="Task not found")
 
 @app.put("/tasks/{task_id}", response_model=Task)
-def update_task(
-    task_id: int, 
-    task_update: TaskBase, 
-    current_user: User = Security(get_current_active_user, scopes=["tasks:write"])
-):
-    """Update an existing task (requires write scope)"""
+def update_task(task_id: int, task_update: TaskBase, current_user: User = Depends(get_current_user)):
+    """Update an existing task"""
     for i, task in enumerate(tasks_db):
         if task.id == task_id:
             updated_task = Task(
@@ -313,11 +323,8 @@ def update_task(
     raise HTTPException(status_code=404, detail="Task not found")
 
 @app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_task(
-    task_id: int, 
-    current_user: User = Security(get_current_active_user, scopes=["tasks:write"])
-):
-    """Delete a task (requires write scope)"""
+def delete_task(task_id: int, current_user: User = Depends(get_current_user)):
+    """Delete a task"""
     for i, task in enumerate(tasks_db):
         if task.id == task_id:
             tasks_db.pop(i)
@@ -331,11 +338,22 @@ def get_status():
     return {
         "status": "ok",
         "version": "1.0.0",
-        "environment_configured": all([
-            CLIENT_ID != "default_client_id",
-            CLIENT_SECRET != "default_client_secret"
-        ])
+        "salesforce_oauth": {
+            "configured": all([
+                CLIENT_ID != "default_client_id",
+                CLIENT_SECRET != "default_client_secret"
+            ]),
+            "auth_url": AUTH_URL,
+            "token_url": TOKEN_URL,
+            "redirect_uri": REDIRECT_URI
+        }
     }
+
+# Add helpful endpoint to initiate auth flow
+@app.get("/login")
+def login_redirect():
+    """Redirect to the OAuth authorization endpoint"""
+    return RedirectResponse(url="/oauth/authorize")
 
 # Run the server
 if __name__ == "__main__":
