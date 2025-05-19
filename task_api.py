@@ -5,12 +5,7 @@ from typing import List, Optional
 from enum import Enum
 import requests
 
-# Salesforce OAuth credentials (Hardcoded — for testing only)
-CLIENT_ID = "3MVG9IXUyidRC0l2tzIXfjoVPzLqAsHzSwWPUL9ik5229A3AKolaFLRE8nZxnELmJCK0sedUCEKPqvd.LpQtW"
-CLIENT_SECRET = "0387FDCB815A02A5496DD87176671C78FE0DB29C2A6CC3CD5C604678E34517D7"
-REDIRECT_URI = "http://localhost:8000/oauth/callback"
-AUTH_URL = "https://login.salesforce.com/services/oauth2/authorize"
-TOKEN_URL = "https://login.salesforce.com/services/oauth2/token"
+
 
 # Enums
 class StatusEnum(str, Enum):
