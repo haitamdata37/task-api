@@ -4,6 +4,16 @@ from typing import List, Optional
 from datetime import date
 import uvicorn
 from enum import Enum
+from dotenv import load_dotenv
+
+load_dotenv()
+
+CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID")
+CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("SALESFORCE_REDIRECT_URI")
+AUTH_URL = os.getenv("SALESFORCE_AUTH_URL")
+TOKEN_URL = os.getenv("SALESFORCE_TOKEN_URL")
+
 
 # Define enums for constrained fields
 class StatusEnum(str, Enum):
@@ -55,7 +65,7 @@ tasks_db = [
 
 # Rename task names to make them unique and meaningful
 task_names = [
-    "api test 5",
+    "api test 9",
     "Complete project requirements documentation",
     "Develop frontend UI components",
     "Set up database schema and models",
