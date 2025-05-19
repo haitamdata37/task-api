@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 import uvicorn
 from enum import Enum
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import hashlib
 import secrets
 
 # Security configuration
@@ -25,8 +25,17 @@ class PriorityEnum(str, Enum):
     NORMAL = "Normal"
     LOW = "Low"
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing with SHA-256 (no bcrypt dependency)
+def get_password_hash(password: str) -> str:
+    salt = secrets.token_hex(16)
+    pwdhash = hashlib.sha256(password.encode() + salt.encode()).hexdigest()
+    return f"{salt}${pwdhash}"
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    salt, stored_hash = hashed_password.split('$')
+    calculated_hash = hashlib.sha256(plain_password.encode() + salt.encode()).hexdigest()
+    return calculated_hash == stored_hash
+
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="token",
     scopes={
@@ -78,12 +87,16 @@ app = FastAPI(title="Task Management API",
               version="1.0.0")
 
 # Fake users database with different permission scopes
+# Create the hashed passwords with our SHA-256 function
+admin_pwd = get_password_hash("adminpassword")
+user_pwd = get_password_hash("userpassword")
+
 fake_users_db = {
     "admin": {
         "username": "admin",
         "full_name": "Administrator",
         "email": "admin@example.com",
-        "hashed_password": pwd_context.hash("adminpassword"),
+        "hashed_password": admin_pwd,
         "disabled": False,
         "scopes": ["tasks:read", "tasks:write"]
     },
@@ -91,7 +104,7 @@ fake_users_db = {
         "username": "user",
         "full_name": "Regular User",
         "email": "user@example.com",
-        "hashed_password": pwd_context.hash("userpassword"),
+        "hashed_password": user_pwd,
         "disabled": False,
         "scopes": ["tasks:read"]  # Read-only access
     }
