@@ -1,11 +1,18 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, status, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import date
-import uvicorn
 from enum import Enum
+import requests
 
-# Define enums for constrained fields
+# Salesforce OAuth credentials (Hardcoded — for testing only)
+CLIENT_ID = "3MVG9IXUyidRC0l2tzIXfjoVPzLqAsHzSwWPUL9ik5229A3AKolaFLRE8nZxnELmJCK0sedUCEKPqvd.LpQtW"
+CLIENT_SECRET = "0387FDCB815A02A5496DD87176671C78FE0DB29C2A6CC3CD5C604678E34517D7"
+REDIRECT_URI = "http://localhost:8000/oauth/callback"
+AUTH_URL = "https://login.salesforce.com/services/oauth2/authorize"
+TOKEN_URL = "https://login.salesforce.com/services/oauth2/token"
+
+# Enums
 class StatusEnum(str, Enum):
     PAS_COMMENCE = "Pas commencé"
     EN_COURS = "En cours"
@@ -16,13 +23,13 @@ class PriorityEnum(str, Enum):
     NORMAL = "Normal"
     LOW = "Low"
 
-# Define Task data model
+# Pydantic models
 class TaskBase(BaseModel):
     Task_Name__c: str
     Status: StatusEnum
     Capacite__c: int
     Effort_Realise__c: int
-    subject: str = "Other"  # Default value
+    subject: str = "Other"
     Priority: PriorityEnum
 
 class TaskCreate(TaskBase):
@@ -30,30 +37,28 @@ class TaskCreate(TaskBase):
 
 class Task(TaskBase):
     id: int
-    
     class Config:
         orm_mode = True
 
-# Initialize FastAPI app
-app = FastAPI(title="Task Management API", 
-              description="API for managing Task objects",
-              version="1.0.0")
+# FastAPI app
+app = FastAPI(title="Task Management API with Salesforce OAuth2.0")
 
-# In-memory database with 20 pre-populated tasks
+# In-memory task list
 tasks_db = [
     Task(
-        id=1,
-        Task_Name__c="Complete project requirements documentation",
+        id=i,
+        Task_Name__c="Placeholder",
         Status=StatusEnum.EN_COURS if i % 3 == 1 else 
               (StatusEnum.TERMINEE if i % 3 == 2 else StatusEnum.PAS_COMMENCE),
         Capacite__c=80 - (i % 5) * 10,
         Effort_Realise__c=20 + (i % 4) * 15,
+        subject="Other",
         Priority=PriorityEnum.HIGH if i % 3 == 0 else 
-               (PriorityEnum.NORMAL if i % 3 == 1 else PriorityEnum.LOW)
-    ) for i in range(1, 21)
+                (PriorityEnum.NORMAL if i % 3 == 1 else PriorityEnum.LOW)
+    )
+    for i in range(1, 21)
 ]
 
-# Rename task names to make them unique and meaningful
 task_names = [
     "api test 5",
     "Complete project requirements documentation",
@@ -74,19 +79,15 @@ task_names = [
     "Perform load testing",
     "Migrate data from old system",
     "Review and improve error handling",
-    "Implement logging and monitoring",
-    "Prepare release notes for v1.0"
+    "Implement logging and monitoring"
 ]
 
-# Update task names
 for i, task in enumerate(tasks_db):
     task.Task_Name__c = task_names[i]
 
-# API routes
+# CRUD routes
 @app.post("/tasks/", response_model=Task, status_code=status.HTTP_201_CREATED)
 def create_task(task: TaskCreate):
-    """Create a new task"""
-    global tasks_db
     new_task = Task(
         id=len(tasks_db) + 1,
         Task_Name__c=task.Task_Name__c,
@@ -101,12 +102,10 @@ def create_task(task: TaskCreate):
 
 @app.get("/tasks/", response_model=List[Task])
 def read_tasks(skip: int = 0, limit: int = 100):
-    """Retrieve a list of tasks"""
-    return tasks_db[skip : skip + limit]
+    return tasks_db[skip: skip + limit]
 
 @app.get("/tasks/{task_id}", response_model=Task)
 def read_task(task_id: int):
-    """Retrieve a specific task by ID"""
     for task in tasks_db:
         if task.id == task_id:
             return task
@@ -114,7 +113,6 @@ def read_task(task_id: int):
 
 @app.put("/tasks/{task_id}", response_model=Task)
 def update_task(task_id: int, task_update: TaskBase):
-    """Update an existing task"""
     for i, task in enumerate(tasks_db):
         if task.id == task_id:
             updated_task = Task(
@@ -132,13 +130,43 @@ def update_task(task_id: int, task_update: TaskBase):
 
 @app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(task_id: int):
-    """Delete a task"""
     for i, task in enumerate(tasks_db):
         if task.id == task_id:
             tasks_db.pop(i)
             return
     raise HTTPException(status_code=404, detail="Task not found")
 
-# Run the server
+# --- Salesforce OAuth2 Routes ---
+@app.get("/login/salesforce")
+def login_salesforce():
+    url = (
+        f"{AUTH_URL}"
+        f"?response_type=code"
+        f"&client_id={CLIENT_ID}"
+        f"&redirect_uri={REDIRECT_URI}"
+    )
+    return RedirectResponse(url=url)
+
+@app.get("/oauth/callback")
+def oauth_callback(code: Optional[str] = None):
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code not found")
+
+    response = requests.post(TOKEN_URL, data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+    })
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to get access token")
+
+    token_data = response.json()
+    return token_data  # Or store/use token as needed
+
+# Run server
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run("task_api:app", host="0.0.0.0", port=8000, reload=True)
